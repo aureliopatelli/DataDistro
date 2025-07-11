@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import norm, lognorm
 
 
 class DataDistro:
@@ -80,42 +80,30 @@ class DataDistro:
         self.data = (self.data - np.mean(self.data)) / np.std(self.data)
         return self
 
-    def trim_extremes(self, percent=None, count=None):
+    def trim_extremes(self, minx=None, maxx=None):
         """
         Remove a fixed number or percentage of the smallest and largest values.
 
         Parameters
         ----------
-        percent : float, optional
-            Fraction of data to remove from each end (e.g., 0.05 removes bottom 5% and top 5%).
-        count : int, optional
-            Exact number of elements to remove from each end.
+        minx : float, optional
+        minx : float, optional
 
         Returns
         -------
         self : DataDistro
             Returns self to allow method chaining.
 
-        Raises
-        ------
-        ValueError
-            If neither percent nor count is provided, or if both are provided.
         """
-        data_sorted = np.sort(self.data)
-        n = len(data_sorted)
-        if (percent is None) == (count is None):
-            raise ValueError("Provide exactly one of 'percent' or 'count'.")
-        if percent is not None:
-            if not (0 <= percent < 0.5):
-                raise ValueError("'percent' must be between 0 and 0.5.")
-            k = int(np.floor(n * percent))
-        else:
-            k = int(count)
-            if k < 0 or 2 * k >= n:
-                raise ValueError("'count' must be non-negative and less than half the data size.")
-        # Trim k lowest and k highest
-        self.data = data_sorted[k:n - k]
+
+        maxx = maxx if maxx is not None else self.data.max()
+        minx = minx if minx is not None else self.data.min()
+
+        # Trim left and right
+        self.data = self.data[(self.data <= maxx) & (self.data >= minx)]
+
         return self
+
 
     def remove_extremes(self, left=None, right=None):
         """
@@ -162,8 +150,8 @@ class DataDistro:
             Returns self to allow method chaining.
 
         """
-        xmin = data.min()
-        xmax = data.max()
+        xmin = self.data.min()
+        xmax = self.data.max()
         if self._df is None:
             df = self.distribution(N=50, minx=xmin, norm=True)
         df = self._df
@@ -457,3 +445,24 @@ class DataDistro:
             return {'alpha': alpha, 'xmin': xmin, 'r2': r2}
         else:
             return {'alpha': np.nan, 'xmin': np.nan, 'r2': np.nan}
+
+    def fit_lognormal(self):
+        """Fit log-normal distribution and compute R² on normalized histogram density."""
+        # Fit parameters: shape (s), loc, scale
+        data = self.data
+        if np.any(data <= 0):
+            raise ValueError("Data must be positive to fit log-normal.")
+        s, loc, scale = lognorm.fit(data, floc=0)
+        self._lognormal_params = (s, loc, scale)
+        # Ensure histogram computed
+        if self._df is None:
+            self.distribution(N=50, norm=True)
+        x = self._df.index.values
+        y_true = self._df['density'].values
+        # Lognormal PDF
+        y_pred = lognorm.pdf(x, s, loc=loc, scale=scale)
+        ss_res = np.sum((y_true - y_pred)**2)
+        ss_tot = np.sum((y_true - y_true.mean())**2)
+        r2 = 1 - ss_res/ss_tot if ss_tot>0 else np.nan
+        self._lognormal_quality = r2
+        return {'shape':s, 'loc':loc, 'scale':scale, 'r2':r2}
