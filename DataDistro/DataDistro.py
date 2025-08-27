@@ -1,3 +1,5 @@
+from itertools import count
+
 import numpy as np
 import pandas as pd
 from scipy.stats import norm, lognorm
@@ -192,6 +194,14 @@ class DataDistro:
         self.data = min_val + (self.data - dmin) * scale
         return self
 
+    def norm(self, df=None):
+        if df is not None:
+            return np.sum(df['count'] * df.index)
+        elif self._df is not None:
+            return np.sum(self._df['count'] * self._df.index)
+        return None
+
+
     def distribution(self, dx=0.001, maxx=None, minx=None, log=False, N=None, norm=False):
         """
         Compute the histogram distribution of the current data.
@@ -243,11 +253,12 @@ class DataDistro:
 
         # Normalize to density if requested
         if norm:
-            df['density'] = df['count'] / (df['count'].sum() * width)
-            df = df.drop(columns=['count'])
+            nn = self.norm(df)
+            df['density'] = df['count'] / nn
+            self._df = df
+#            return df.drop(columns=['count'])
 
         self._df = df
-
         return df
 
     def _compute_linear_bins(self, data, minx, maxx, dx, N):
@@ -286,6 +297,8 @@ class DataDistro:
         # Shift centers: integer data gets full dx, floats get half-dx offset
         shift = dx if data.dtype == 'int64' else dx / 2
         centers = edges[:-1] + shift
+        self._edges = edges
+        self._counts = counts
         return centers, counts, dx
 
     def _compute_log_bins(self, data, minx, maxx, dx, N):
@@ -323,8 +336,15 @@ class DataDistro:
         # Compute widths and densities
         widths = np.diff(edges)
         densities = counts / widths
+        self._edges = edges
+        self._counts = counts
         # Return density vector for uniform interface
         return centers, densities, widths
+
+    def rank(self, **kwargs):
+        df = pd.DataFrame({'data': self.data})
+        df['ranking'] = df['data'].rank(method='dense', **kwargs).astype(int)
+        return df
 
     def reset(self):
         """
@@ -466,3 +486,21 @@ class DataDistro:
         r2 = 1 - ss_res/ss_tot if ss_tot>0 else np.nan
         self._lognormal_quality = r2
         return {'shape':s, 'loc':loc, 'scale':scale, 'r2':r2}
+
+    def _entropy(self, prob):
+        nl = np.log(prob)
+        nl[prob==0]=0
+        return -np.sum(prob * nl)
+
+    def get_res(self):
+
+        if self._df is not None:
+            counts = self._df['count']
+            size = counts.sum()
+            vc = counts.value_counts()
+            prob_m = (vc.index * vc.values)
+            prob_m = np.array(prob_m) / size
+            prob_s = counts.values / size
+
+
+            return self._entropy(prob_s), self._entropy(prob_m)
