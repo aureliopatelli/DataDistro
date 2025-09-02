@@ -4,7 +4,6 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm, lognorm
 
-
 class DataDistro:
     """
     A class for computing data distributions with options for outlier removal and standardization.
@@ -504,3 +503,92 @@ class DataDistro:
 
 
             return self._entropy(prob_s), self._entropy(prob_m)
+
+    def _prep_positive_array(self, x):
+        x = np.asarray(x, dtype=float)
+        x = x[np.isfinite(x)]
+        x = x[x > 0.0]
+        if x.size < 2:
+            raise ValueError("Needed 2 positive values")
+        return x
+
+    def hill_estimator(self, k, xmin=None):
+        x = self._prep_positive_array(self.data)
+        x_sorted = np.sort(x)[::-1]  # decrescente
+        n = x_sorted.size
+        if not (1 <= k < n):
+            raise ValueError("k must be between 1 and n-1.")
+
+        if xmin is None:
+            threshold = x_sorted[k]  # x_(k+1)
+            tail = x_sorted[:k]
+        else:
+            threshold = float(xmin)
+            tail = x_sorted[x_sorted >= threshold]
+            k = tail.size
+            if k < 1:
+                raise ValueError("With xmin given, no data in the tail")
+
+        logs = np.log(tail) - np.log(threshold)
+        alpha_hat = 1.0 / np.mean(logs)
+        return alpha_hat, threshold, k
+
+    def hill_sequence(self, kmin=5, kmax=None):
+        x = self._prep_positive_array(self.data)
+        x_sorted = np.sort(x)[::-1]
+        n = x_sorted.size
+        if kmax is None:
+            kmax = max(kmin + 1, n // 2)
+        ks = np.arange(kmin, min(kmax, n - 1) + 1)
+        alphas = []
+        thresholds = []
+        for k in ks:
+            a, thr, _ = self.hill_estimator(k)
+            alphas.append(a)
+            thresholds.append(thr)
+        return ks, np.array(alphas), np.array(thresholds)
+
+    def select_k_via_KS(self, kmin=5, kmax=None):
+        x = self._prep_positive_array(self.data)
+        x_sorted = np.sort(x)[::-1]
+        n = x_sorted.size
+        if kmax is None:
+            kmax = max(kmin + 1, n // 2)
+        best = None
+        for k in range(kmin, min(kmax, n - 1) + 1):
+            alpha, xmin, _ = self.hill_estimator(k)
+            tail = x_sorted[:k]
+            tail_sorted = np.sort(tail)
+            F_emp = np.arange(1, tail_sorted.size + 1) / tail_sorted.size
+            F_par = 1.0 - (xmin / tail_sorted) ** alpha
+            ks_dist = np.max(np.abs(F_emp - F_par))
+            if (best is None) or (ks_dist < best[-1]):
+                best = (k, alpha, xmin, ks_dist)
+        return best
+
+    def hill_bootstrap_ci(self,  k, xmin=None, B=1000, ci=0.95, random_state=None):
+        rng = np.random.default_rng(random_state)
+        x = self._prep_positive_array(self.data)
+        x_sorted = np.sort(x)[::-1]
+        n = x_sorted.size
+        if xmin is None:
+            if not (1 <= k < n):
+                raise ValueError("k must be between 1 and n-1.")
+            xmin_use = x_sorted[k]
+            tail = x_sorted[:k]
+        else:
+            xmin_use = float(xmin)
+            tail = x_sorted[x_sorted >= xmin_use]
+            k = tail.size
+            if k < 1:
+                raise ValueError("With xmin given, no data in the tail")
+        alphas = []
+        for _ in range(B):
+            samp = rng.choice(tail, size=tail.size, replace=True)
+            logs = np.log(samp) - np.log(xmin_use)
+            a = 1.0 / np.mean(logs)
+            alphas.append(a)
+        alphas = np.sort(alphas)
+        lo = alphas[int((1 - ci) / 2 * B)]
+        hi = alphas[int((1 + (ci)) / 2 * B) - 1]
+        return lo, hi
